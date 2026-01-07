@@ -1,0 +1,57 @@
+# Compiled class files
+*.class
+target/
+build/
+out/
+
+# Log files
+*.log
+logs/
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# IDE Files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Spring Boot
+HELP.md
+.gradle
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Sensitive Data (NEVER COMMIT THESE!)
+application-local.properties
+application-dev.properties
+*.env
+.env
+.env.local
+
+# Upload Directory
+uploads/
+/tmp/
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
