@@ -79,6 +79,7 @@ public class SecurityConfig {
                                 "/auth/**",
                                 "/otp/**"
                         ).permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers(
                                 "/college/**",
                                 "/registration/**"
