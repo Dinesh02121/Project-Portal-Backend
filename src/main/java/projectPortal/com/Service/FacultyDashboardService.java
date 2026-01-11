@@ -253,64 +253,80 @@ public class FacultyDashboardService {
     }
 
     // NEW: AI Analysis Method
-    public Map<String, Object> analyzeProject(Long projectId, String email) {
-        // Verify faculty access
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
-                .orElseThrow(() -> new RuntimeException("Faculty not found"));
+  public Map<String, Object> analyzeProject(Long projectId, String email) {
+    // Verify faculty access
+    FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+            .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
-        ProjectEntity project = projectRepository.findById(projectId)
-                .orElseThrow(() -> new RuntimeException("Project not found"));
+    ProjectEntity project = projectRepository.findById(projectId)
+            .orElseThrow(() -> new RuntimeException("Project not found"));
 
-        if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
-            throw new RuntimeException("Unauthorized: You are not assigned to this project");
-        }
-
-        // Get extracted path
-        String extractedPath = project.getExtractedPath();
-        if (extractedPath == null || extractedPath.isEmpty()) {
-            throw new RuntimeException("Project files not found");
-        }
-
-        Path projectPath = Paths.get(extractedPath);
-        if (!Files.exists(projectPath)) {
-            throw new RuntimeException("Project directory not found on server");
-        }
-
-        // Read files from project
-        Map<String, String> filesContent = readProjectFilesForAnalysis(projectPath);
-
-        if (filesContent.isEmpty()) {
-            throw new RuntimeException("No readable files found in project");
-        }
-
-        // Prepare request for Python AI service
-        Map<String, Object> analysisRequest = new HashMap<>();
-        analysisRequest.put("project_name", project.getTitle());
-        analysisRequest.put("student_description", project.getDescription());
-        analysisRequest.put("files_content", filesContent);
-
-        // Call Python AI service
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(analysisRequest, headers);
-
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                    aiServiceUrl + "/analyze-content",
-                    entity,
-                    Map.class
-            );
-
-            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-                return response.getBody();
-            } else {
-                throw new RuntimeException("AI service returned empty response");
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to analyze project: " + e.getMessage());
-        }
+    if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
+        throw new RuntimeException("Unauthorized: You are not assigned to this project");
     }
 
+    // Get extracted path
+    String extractedPath = project.getExtractedPath();
+    System.out.println("=== PROJECT ANALYSIS DEBUG ===");
+    System.out.println("Project ID: " + projectId);
+    System.out.println("Project Title: " + project.getTitle());
+    System.out.println("Extracted Path: " + extractedPath);
+    
+    if (extractedPath == null || extractedPath.isEmpty()) {
+        throw new RuntimeException("Project files not found - extracted path is null or empty");
+    }
+
+    Path projectPath = Paths.get(extractedPath);
+    System.out.println("Project Path exists: " + Files.exists(projectPath));
+    System.out.println("Project Path is directory: " + Files.isDirectory(projectPath));
+    
+    if (!Files.exists(projectPath)) {
+        throw new RuntimeException("Project directory not found on server at: " + projectPath);
+    }
+
+    // Read files from project
+    Map<String, String> filesContent = readProjectFilesForAnalysis(projectPath);
+
+    if (filesContent.isEmpty()) {
+        throw new RuntimeException("No readable files found in project. Please check if project files were extracted correctly.");
+    }
+
+    System.out.println("Files to send to AI: " + filesContent.keySet());
+
+    // Prepare request for Python AI service
+    Map<String, Object> analysisRequest = new HashMap<>();
+    analysisRequest.put("project_name", project.getTitle());
+    analysisRequest.put("student_description", project.getDescription());
+    analysisRequest.put("files_content", filesContent);
+
+    System.out.println("Calling AI service at: " + aiServiceUrl);
+
+    // Call Python AI service
+    try {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(analysisRequest, headers);
+
+        ResponseEntity<Map> response = restTemplate.postForEntity(
+                aiServiceUrl + "/analyze-content",
+                entity,
+                Map.class
+        );
+
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            System.out.println("AI Analysis successful!");
+            return response.getBody();
+        } else {
+            throw new RuntimeException("AI service returned empty response");
+        }
+    } catch (Exception e) {
+        System.err.println("AI Service Error: " + e.getMessage());
+        e.printStackTrace();
+        throw new RuntimeException("Failed to analyze project: " + e.getMessage());
+    }
+}
+
+    
    private Map<String, String> readProjectFilesForAnalysis(Path projectPath) {
     Map<String, String> filesContent = new HashMap<>();
 
