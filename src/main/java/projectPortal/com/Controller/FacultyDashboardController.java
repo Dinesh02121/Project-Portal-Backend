@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import projectPortal.com.DTO.FacultyDashboardSummary;
 import projectPortal.com.DTO.FacultyProfile;
 import projectPortal.com.DTO.FileInfo;
-import projectPortal.com.DTO.FileInfo;
+import projectPortal.com.DTO.ProjectDetailsDTO;
 import projectPortal.com.Entity.ProjectEntity;
 import projectPortal.com.Service.FacultyDashboardService;
 
@@ -20,7 +20,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/faculty/dashboard")
 public class FacultyDashboardController {
-
+    
     @Autowired
     private FacultyDashboardService dashboardService;
 
@@ -30,7 +30,7 @@ public class FacultyDashboardController {
     }
 
     @GetMapping("/profile")
-    public FacultyProfile facultyProfile(Authentication auth){
+    public FacultyProfile facultyProfile(Authentication auth) {
         return dashboardService.facultyProfile(auth.getName());
     }
 
@@ -44,7 +44,6 @@ public class FacultyDashboardController {
             @PathVariable Long projectId,
             @RequestParam boolean accept,
             Authentication auth) {
-
         return dashboardService.respondToProject(
                 projectId,
                 accept,
@@ -61,13 +60,13 @@ public class FacultyDashboardController {
     }
 
     @GetMapping("/project/{projectId}/details")
-    public ResponseEntity<?> getProjectDetails(
+    public ResponseEntity<ProjectDetailsDTO> getProjectDetails(
             @PathVariable Long projectId,
             Authentication auth) {
         return ResponseEntity.ok(dashboardService.getProjectDetails(projectId, auth.getName()));
     }
 
-    // New endpoints for file operations
+    // File operations endpoints
     @GetMapping("/project/{projectId}/files")
     public List<FileInfo> getProjectFiles(
             @PathVariable Long projectId,
@@ -92,14 +91,28 @@ public class FacultyDashboardController {
             @PathVariable Long projectId,
             @RequestParam String path,
             Authentication auth) {
-
         Resource resource = dashboardService.downloadFile(projectId, path, auth.getName());
-
         String filename = path.substring(path.lastIndexOf('/') + 1);
-
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .body(resource);
+    }
+
+    // NEW: AI Analysis endpoint
+    @PostMapping("/project/{projectId}/analyze")
+    public ResponseEntity<?> analyzeProject(
+            @PathVariable Long projectId,
+            Authentication auth) {
+        try {
+            Map<String, Object> analysisResult = dashboardService.analyzeProject(
+                    projectId, 
+                    auth.getName()
+            );
+            return ResponseEntity.ok(analysisResult);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", e.getMessage()));
+        }
     }
 }
