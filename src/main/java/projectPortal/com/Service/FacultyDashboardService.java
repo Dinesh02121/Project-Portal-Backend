@@ -311,77 +311,162 @@ public class FacultyDashboardService {
         }
     }
 
-    private Map<String, String> readProjectFilesForAnalysis(Path projectPath) {
-        Map<String, String> filesContent = new HashMap<>();
+   private Map<String, String> readProjectFilesForAnalysis(Path projectPath) {
+    Map<String, String> filesContent = new HashMap<>();
 
-        try {
-            // Skip directories
-            Set<String> skipDirs = Set.of(
-                    "node_modules", "venv", "__pycache__", "build", "dist",
-                    ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
-                    "out", "logs", "temp", "tmp"
-            );
+    try {
+      
+        Set<String> skipDirs = Set.of(
+                "node_modules", "venv", "__pycache__", "build", "dist",
+                ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
+                "out", "logs", "temp", "tmp", ".mvn", ".gradle"
+        );
 
-            // Text file extensions
-            Set<String> textExtensions = Set.of(
-                    ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h", ".hpp",
-                    ".html", ".css", ".scss", ".sass", ".less",
-                    ".json", ".xml", ".yaml", ".yml", ".toml",
-                    ".md", ".txt", ".properties", ".env",
-                    ".sql", ".sh", ".bash", ".gradle", ".jsp", ".php", ".rb", ".go", ".rs"
-            );
+        // Text file extensions - more comprehensive list
+        Set<String> textExtensions = Set.of(
+                ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h", ".hpp",
+                ".html", ".css", ".scss", ".sass", ".less",
+                ".json", ".xml", ".yaml", ".yml", ".toml",
+                ".md", ".txt", ".properties", ".env",
+                ".sql", ".sh", ".bash", ".gradle", ".jsp", ".jspx",
+                ".php", ".rb", ".go", ".rs", ".kt", ".swift"
+        );
 
-            // Priority files to always include
-            Set<String> priorityFiles = Set.of(
-                    "README.md", "package.json", "pom.xml", "build.gradle",
-                    "requirements.txt", "Cargo.toml", "go.mod"
-            );
+        // Priority files to always include (case-insensitive)
+        Set<String> priorityFiles = Set.of(
+                "readme.md", "readme.txt", "package.json", "pom.xml", 
+                "build.gradle", "requirements.txt", "cargo.toml", 
+                "go.mod", "application.properties", "application.yml"
+        );
 
-            List<Path> filesToRead = Files.walk(projectPath)
-                    .filter(Files::isRegularFile)
-                    .filter(path -> {
-                        // Skip files in excluded directories
-                        for (String skipDir : skipDirs) {
-                            if (path.toString().contains(File.separator + skipDir + File.separator) ||
-                                path.toString().endsWith(File.separator + skipDir)) {
-                                return false;
-                            }
+        // Collect all eligible files
+        List<Path> allFiles = new ArrayList<>();
+        
+        Files.walk(projectPath)
+                .filter(Files::isRegularFile)
+                .filter(path -> {
+                    // Check if file is in a skip directory
+                    String pathStr = path.toString();
+                    for (String skipDir : skipDirs) {
+                        if (pathStr.contains(File.separator + skipDir + File.separator) ||
+                            pathStr.contains("/" + skipDir + "/")) {
+                            return false;
                         }
-                        return true;
-                    })
-                    .filter(path -> {
-                        String fileName = path.getFileName().toString().toLowerCase();
-                        // Include if it's a priority file or has a text extension
-                        return priorityFiles.contains(fileName) ||
-                               textExtensions.stream().anyMatch(fileName::endsWith);
-                    })
-                    .limit(20) // Limit to 20 files
-                    .collect(Collectors.toList());
+                    }
+                    return true;
+                })
+                .forEach(allFiles::add);
 
-            for (Path file : filesToRead) {
+        System.out.println("Total files found (after filtering): " + allFiles.size());
+
+        // Separate priority and regular files
+        List<Path> priorityFilePaths = new ArrayList<>();
+        List<Path> regularFilePaths = new ArrayList<>();
+
+        for (Path file : allFiles) {
+            String fileName = file.getFileName().toString().toLowerCase();
+            String extension = "";
+            
+            int lastDot = fileName.lastIndexOf('.');
+            if (lastDot > 0) {
+                extension = fileName.substring(lastDot);
+            }
+
+            // Check if it's a priority file
+            if (priorityFiles.contains(fileName)) {
+                priorityFilePaths.add(file);
+            } 
+            // Check if it has a text extension
+            else if (textExtensions.contains(extension)) {
+                regularFilePaths.add(file);
+            }
+        }
+
+        System.out.println("Priority files found: " + priorityFilePaths.size());
+        System.out.println("Regular text files found: " + regularFilePaths.size());
+
+        // Read priority files first (all of them)
+        for (Path file : priorityFilePaths) {
+            try {
+                String content = Files.readString(file);
+                String relativePath = projectPath.relativize(file).toString();
+
+                // Limit content length
+                if (content.length() > 5000) {
+                    content = content.substring(0, 5000) + "\n... (truncated)";
+                }
+
+                filesContent.put(relativePath, content);
+                System.out.println("Read priority file: " + relativePath);
+            } catch (Exception e) {
+                System.err.println("Could not read priority file: " + file.getFileName() + " - " + e.getMessage());
+            }
+        }
+
+        // Read regular files (up to 15 more files)
+        int regularFilesRead = 0;
+        int maxRegularFiles = 15;
+        
+        for (Path file : regularFilePaths) {
+            if (regularFilesRead >= maxRegularFiles) {
+                break;
+            }
+
+            try {
+                String content = Files.readString(file);
+                String relativePath = projectPath.relativize(file).toString();
+
+                // Limit content length
+                if (content.length() > 3000) {
+                    content = content.substring(0, 3000) + "\n... (truncated)";
+                }
+
+                filesContent.put(relativePath, content);
+                regularFilesRead++;
+                System.out.println("Read regular file: " + relativePath);
+            } catch (Exception e) {
+                System.err.println("Could not read file: " + file.getFileName() + " - " + e.getMessage());
+            }
+        }
+
+        System.out.println("Total files read for analysis: " + filesContent.size());
+        
+        // If still no files, try to read ANY text file
+        if (filesContent.isEmpty()) {
+            System.out.println("No files with standard extensions found, trying all text files...");
+            
+            for (Path file : allFiles) {
+                if (filesContent.size() >= 5) break; // At least get 5 files
+                
                 try {
+                    // Try to read as text
                     String content = Files.readString(file);
                     String relativePath = projectPath.relativize(file).toString();
-
-                    // Limit content length to avoid huge payloads
+                    
                     if (content.length() > 3000) {
                         content = content.substring(0, 3000) + "\n... (truncated)";
                     }
-
+                    
                     filesContent.put(relativePath, content);
+                    System.out.println("Read fallback file: " + relativePath);
                 } catch (Exception e) {
-                    // Skip files that can't be read
+                    // Skip binary files or unreadable files
                     continue;
                 }
             }
-
-        } catch (IOException e) {
-            throw new RuntimeException("Error reading project files: " + e.getMessage());
         }
 
-        return filesContent;
+    } catch (IOException e) {
+        System.err.println("Error reading project files: " + e.getMessage());
+        e.printStackTrace();
+        throw new RuntimeException("Error reading project files: " + e.getMessage());
     }
 
+    System.out.println("Final files content map size: " + filesContent.size());
+    return filesContent;
+}
+
+    
     private String formatFileSize(long sizeInBytes) {
         if (sizeInBytes < 1024) {
             return sizeInBytes + " B";
