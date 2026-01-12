@@ -2,13 +2,18 @@ package projectPortal.com.Service;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 import projectPortal.com.DTO.FileInfo;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import projectPortal.com.DTO.*;
+import projectPortal.com.DTO.CreateProjectRequest;
+import projectPortal.com.DTO.StudentDashboardSummary;
+import projectPortal.com.DTO.StudentProfileResponse;
+import projectPortal.com.DTO.StudentProjectResponse;
 import projectPortal.com.Entity.*;
 import projectPortal.com.Repository.*;
 import projectPortal.com.enums.MemberRole;
@@ -18,7 +23,6 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -43,7 +47,7 @@ public class StudentDashboardService {
             ProjectRepository projectRepository,
             ProjectMemberRepository projectMemberRepository,
             FacultyRepository facultyRepository,
-            CollegeRepository collegeRepository, 
+            CollegeRepository collegeRepository,
             UserRepository userRepository) {
         this.studentRepository = studentRepository;
         this.projectRepository = projectRepository;
@@ -135,20 +139,19 @@ public class StudentDashboardService {
             projectRepository.save(project);
 
             Long projectId = project.getProjectId();
-            String zipFileName = "projects/" + projectId + "/" + zipFile.getOriginalFilename();
+            
+            // Create Supabase path: Project-Submission/projects/{id}/{filename}
+            String supabasePath = "Project-Submission/projects/" + projectId + "/" + 
+                                  zipFile.getOriginalFilename();
 
             // Upload ZIP to Supabase
             byte[] zipBytes = zipFile.getBytes();
-            String uploadedPath = supabaseStorage.uploadFile(
-                    zipFileName, 
-                    zipBytes, 
-                    "application/zip"
-            );
+            String uploadedPath = supabaseStorage.uploadFile(supabasePath, zipBytes);
 
             // Update project with Supabase paths
             project.setProjectZipName(zipFile.getOriginalFilename());
-            project.setProjectZipPath(uploadedPath); // Supabase storage path
-            project.setExtractedPath("projects/" + projectId + "/extracted"); // Virtual path for reference
+            project.setProjectZipPath(uploadedPath); // Full path in Supabase
+            project.setExtractedPath("projects/" + projectId + "/extracted"); // Virtual path
 
             projectRepository.save(project);
 
@@ -178,6 +181,8 @@ public class StudentDashboardService {
             return "Project created and faculty request sent successfully";
 
         } catch (IOException e) {
+            System.err.println("Error creating project: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Project creation failed: " + e.getMessage());
         }
     }
