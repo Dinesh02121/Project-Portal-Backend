@@ -298,37 +298,63 @@ public class StudentDashboardService {
 
     // Helper method to list files in ZIP
     private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
-        List<FileInfo> fileInfos = new ArrayList<>();
-        Set<String> addedDirectories = new HashSet<>();
+    List<FileInfo> fileInfos = new ArrayList<>();
+    Set<String> addedDirectories = new HashSet<>();
 
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                String entryName = entry.getName();
+    try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+        ZipEntry entry;
+        while ((entry = zis.getNextEntry()) != null) {
+            String entryName = entry.getName();
 
-                // Filter by prefix if provided
-                if (prefix != null && !prefix.isEmpty()) {
-                    if (!entryName.startsWith(prefix + "/") && !entryName.equals(prefix)) {
-                        continue;
-                    }
-                    // Remove prefix from entry name
-                    entryName = entryName.substring(prefix.length());
-                    if (entryName.startsWith("/")) {
-                        entryName = entryName.substring(1);
-                    }
-                }
+            // Skip macOS metadata files
+            if (entryName.contains("__MACOSX") || entryName.contains(".DS_Store")) {
+                continue;
+            }
 
-                // Skip if empty
-                if (entryName.isEmpty()) {
+            // Filter by prefix if provided
+            if (prefix != null && !prefix.isEmpty()) {
+                String normalizedPrefix = prefix.endsWith("/") ? prefix : prefix + "/";
+                
+                if (!entryName.startsWith(normalizedPrefix) && !entryName.equals(prefix)) {
                     continue;
                 }
+                
+                // Remove prefix from entry name
+                entryName = entryName.substring(normalizedPrefix.length());
+            }
 
-                // Get first level only
-                String[] parts = entryName.split("/");
-                String firstName = parts[0];
+            // Skip if empty or just "/"
+            if (entryName.isEmpty() || entryName.equals("/")) {
+                continue;
+            }
 
-                if (parts.length > 1) {
-                    // It's in a subdirectory, add the directory
+            // Remove trailing slash for processing
+            boolean isDirectory = entryName.endsWith("/") || entry.isDirectory();
+            if (entryName.endsWith("/")) {
+                entryName = entryName.substring(0, entryName.length() - 1);
+            }
+
+            // Skip if still empty
+            if (entryName.isEmpty()) {
+                continue;
+            }
+
+            // Get first level only
+            String[] parts = entryName.split("/");
+            String firstName = parts[0];
+
+            if (parts.length > 1) {
+                // It's in a subdirectory, add the directory if not already added
+                if (!addedDirectories.contains(firstName)) {
+                    String dirPath = prefix != null && !prefix.isEmpty() ? 
+                            prefix + "/" + firstName : firstName;
+                    fileInfos.add(new FileInfo(firstName, dirPath, true, "-"));
+                    addedDirectories.add(firstName);
+                }
+            } else {
+                // It's in current directory
+                if (isDirectory) {
+                    // Add directory if not already added
                     if (!addedDirectories.contains(firstName)) {
                         String dirPath = prefix != null && !prefix.isEmpty() ? 
                                 prefix + "/" + firstName : firstName;
@@ -336,20 +362,29 @@ public class StudentDashboardService {
                         addedDirectories.add(firstName);
                     }
                 } else {
-                    // It's a file in current directory
-                    String filePath = prefix != null && !prefix.isEmpty() ? 
-                            prefix + "/" + firstName : firstName;
-                    String size = formatFileSize(entry.getSize());
-                    fileInfos.add(new FileInfo(firstName, filePath, false, size));
+                    // It's a file - don't add if it's a directory entry we've already processed
+                    if (!addedDirectories.contains(firstName)) {
+                        String filePath = prefix != null && !prefix.isEmpty() ? 
+                                prefix + "/" + firstName : firstName;
+                        String size = formatFileSize(entry.getSize());
+                        fileInfos.add(new FileInfo(firstName, filePath, false, size));
+                    }
                 }
-
-                zis.closeEntry();
             }
-        }
 
-        return fileInfos;
+            zis.closeEntry();
+        }
     }
 
+    // Sort: directories first, then files, both alphabetically
+    fileInfos.sort((a, b) -> {
+        if (a.isDirectory() && !b.isDirectory()) return -1;
+        if (!a.isDirectory() && b.isDirectory()) return 1;
+        return a.getName().compareToIgnoreCase(b.getName());
+    });
+
+    return fileInfos;
+}
     // Helper method to extract file content from ZIP
     private String extractFileFromZip(byte[] zipBytes, String filePath) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
