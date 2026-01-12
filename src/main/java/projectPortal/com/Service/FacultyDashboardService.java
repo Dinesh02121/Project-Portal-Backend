@@ -1,8 +1,9 @@
 package projectPortal.com.Service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -17,16 +18,17 @@ import projectPortal.com.Repository.ProjectRepository;
 import projectPortal.com.enums.ProjectStatus;
 import projectPortal.com.enums.Role;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Service
 public class FacultyDashboardService {
+    
+    @Autowired
+    private SupabaseStorageService supabaseStorage;
     
     private final FacultyRepository facultyRepository;
     private final ProjectRepository projectRepository;
@@ -136,45 +138,19 @@ public class FacultyDashboardService {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
-        String projectPath = project.getExtractedPath();
-        if (projectPath == null || projectPath.isEmpty()) {
-            throw new RuntimeException("Project path not found");
+        try {
+            // Download ZIP from Supabase
+            String zipPath = project.getProjectZipPath();
+            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+
+            // List files in ZIP
+            return listFilesInZip(zipBytes, path);
+
+        } catch (Exception e) {
+            System.err.println("Error reading project files: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Error reading project files: " + e.getMessage());
         }
-
-        Path basePath = Paths.get(projectPath);
-        Path targetPath = (path == null || path.isEmpty()) ? 
-                basePath : basePath.resolve(path);
-
-        File directory = targetPath.toFile();
-        if (!directory.exists() || !directory.isDirectory()) {
-            throw new RuntimeException("Directory not found");
-        }
-
-        List<FileInfo> files = new ArrayList<>();
-        File[] fileList = directory.listFiles();
-
-        if (fileList != null) {
-            for (File file : fileList) {
-                try {
-                    String relativePath = basePath.relativize(file.toPath()).toString();
-                    FileInfo fileDTO = new FileInfo();
-                    fileDTO.setName(file.getName());
-                    fileDTO.setPath(relativePath);
-                    fileDTO.setDirectory(file.isDirectory());
-
-                    if (!file.isDirectory()) {
-                        long sizeInBytes = file.length();
-                        fileDTO.setSize(formatFileSize(sizeInBytes));
-                    }
-
-                    files.add(fileDTO);
-                } catch (Exception e) {
-                    continue;
-                }
-            }
-        }
-
-        return files;
     }
 
     public String getFileContent(Long projectId, String path, String email) {
@@ -188,26 +164,17 @@ public class FacultyDashboardService {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
-        String projectPath = project.getExtractedPath();
-        if (projectPath == null || projectPath.isEmpty()) {
-            throw new RuntimeException("Project path not found");
-        }
-
-        Path basePath = Paths.get(projectPath);
-        Path filePath = basePath.resolve(path);
-
-        if (!filePath.normalize().startsWith(basePath.normalize())) {
-            throw new RuntimeException("Invalid file path");
-        }
-
-        File file = filePath.toFile();
-        if (!file.exists() || file.isDirectory()) {
-            throw new RuntimeException("File not found");
-        }
-
         try {
-            return Files.readString(filePath);
-        } catch (IOException e) {
+            // Download ZIP from Supabase
+            String zipPath = project.getProjectZipPath();
+            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+
+            // Extract specific file content from ZIP
+            return extractFileFromZip(zipBytes, path);
+
+        } catch (Exception e) {
+            System.err.println("Error reading file: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Error reading file: " + e.getMessage());
         }
     }
@@ -223,122 +190,103 @@ public class FacultyDashboardService {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
-        String projectPath = project.getExtractedPath();
-        if (projectPath == null || projectPath.isEmpty()) {
-            throw new RuntimeException("Project path not found");
-        }
-
-        Path basePath = Paths.get(projectPath);
-        Path filePath = basePath.resolve(path);
-
-        if (!filePath.normalize().startsWith(basePath.normalize())) {
-            throw new RuntimeException("Invalid file path");
-        }
-
-        File file = filePath.toFile();
-        if (!file.exists() || file.isDirectory()) {
-            throw new RuntimeException("File not found or is a directory");
-        }
-
         try {
-            Resource resource = new UrlResource(filePath.toUri());
-            if (resource.exists() && resource.isReadable()) {
-                return resource;
-            } else {
-                throw new RuntimeException("File is not readable");
-            }
+            // Download ZIP from Supabase
+            String zipPath = project.getProjectZipPath();
+            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+
+            // Extract specific file from ZIP
+            byte[] fileBytes = extractFileBytesFromZip(zipBytes, path);
+            
+            return new ByteArrayResource(fileBytes);
+
         } catch (Exception e) {
+            System.err.println("Error downloading file: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Error downloading file: " + e.getMessage());
         }
     }
 
-    // NEW: AI Analysis Method
-  public Map<String, Object> analyzeProject(Long projectId, String email) {
-    // Verify faculty access
-    FacultyEntity faculty = facultyRepository.findByUser_Email(email)
-            .orElseThrow(() -> new RuntimeException("Faculty not found"));
+    // AI Analysis Method
+    public Map<String, Object> analyzeProject(Long projectId, String email) {
+        System.out.println("=== PROJECT ANALYSIS DEBUG ===");
+        System.out.println("Project ID: " + projectId);
+        
+        // Verify faculty access
+        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+                .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
-    ProjectEntity project = projectRepository.findById(projectId)
-            .orElseThrow(() -> new RuntimeException("Project not found"));
+        ProjectEntity project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project not found"));
 
-    if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
-        throw new RuntimeException("Unauthorized: You are not assigned to this project");
-    }
-
-    // Get extracted path
-    String extractedPath = project.getExtractedPath();
-    System.out.println("=== PROJECT ANALYSIS DEBUG ===");
-    System.out.println("Project ID: " + projectId);
-    System.out.println("Project Title: " + project.getTitle());
-    System.out.println("Extracted Path: " + extractedPath);
-    
-    if (extractedPath == null || extractedPath.isEmpty()) {
-        throw new RuntimeException("Project files not found - extracted path is null or empty");
-    }
-
-    Path projectPath = Paths.get(extractedPath);
-    System.out.println("Project Path exists: " + Files.exists(projectPath));
-    System.out.println("Project Path is directory: " + Files.isDirectory(projectPath));
-    
-    if (!Files.exists(projectPath)) {
-        throw new RuntimeException("Project directory not found on server at: " + projectPath);
-    }
-
-    // Read files from project
-    Map<String, String> filesContent = readProjectFilesForAnalysis(projectPath);
-
-    if (filesContent.isEmpty()) {
-        throw new RuntimeException("No readable files found in project. Please check if project files were extracted correctly.");
-    }
-
-    System.out.println("Files to send to AI: " + filesContent.keySet());
-
-    // Prepare request for Python AI service
-    Map<String, Object> analysisRequest = new HashMap<>();
-    analysisRequest.put("project_name", project.getTitle());
-    analysisRequest.put("student_description", project.getDescription());
-    analysisRequest.put("files_content", filesContent);
-
-    System.out.println("Calling AI service at: " + aiServiceUrl);
-
-    // Call Python AI service
-    try {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(analysisRequest, headers);
-
-        ResponseEntity<Map> response = restTemplate.postForEntity(
-                aiServiceUrl + "/analyze-content",
-                entity,
-                Map.class
-        );
-
-        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-            System.out.println("AI Analysis successful!");
-            return response.getBody();
-        } else {
-            throw new RuntimeException("AI service returned empty response");
+        if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
+            throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
-    } catch (Exception e) {
-        System.err.println("AI Service Error: " + e.getMessage());
-        e.printStackTrace();
-        throw new RuntimeException("Failed to analyze project: " + e.getMessage());
+
+        System.out.println("Project Title: " + project.getTitle());
+        System.out.println("ZIP Path in Supabase: " + project.getProjectZipPath());
+
+        try {
+            // Download ZIP from Supabase
+            String zipPath = project.getProjectZipPath();
+            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+            
+            System.out.println("✓ Downloaded ZIP from Supabase, size: " + zipBytes.length + " bytes");
+
+            // Extract and read files from ZIP
+            Map<String, String> filesContent = extractAndReadZipFiles(zipBytes);
+
+            if (filesContent.isEmpty()) {
+                throw new RuntimeException("No readable files found in project ZIP");
+            }
+
+            System.out.println("✓ Extracted " + filesContent.size() + " files from ZIP");
+            System.out.println("Files: " + filesContent.keySet());
+
+            // Prepare request for Python AI service
+            Map<String, Object> analysisRequest = new HashMap<>();
+            analysisRequest.put("project_name", project.getTitle());
+            analysisRequest.put("student_description", project.getDescription());
+            analysisRequest.put("files_content", filesContent);
+
+            System.out.println("Calling AI service at: " + aiServiceUrl + "/analyze-content");
+
+            // Call Python AI service
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(analysisRequest, headers);
+
+            ResponseEntity<Map> response = restTemplate.postForEntity(
+                    aiServiceUrl + "/analyze-content",
+                    entity,
+                    Map.class
+            );
+
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                System.out.println("✓ AI Analysis successful!");
+                return response.getBody();
+            } else {
+                throw new RuntimeException("AI service returned empty response");
+            }
+        } catch (Exception e) {
+            System.err.println("AI Service Error: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Failed to analyze project: " + e.getMessage());
+        }
     }
-}
 
-    
-   private Map<String, String> readProjectFilesForAnalysis(Path projectPath) {
-    Map<String, String> filesContent = new HashMap<>();
+    // Helper method to extract and read files from ZIP
+    private Map<String, String> extractAndReadZipFiles(byte[] zipBytes) throws IOException {
+        Map<String, String> filesContent = new HashMap<>();
 
-    try {
-      
+        // Skip directories
         Set<String> skipDirs = Set.of(
                 "node_modules", "venv", "__pycache__", "build", "dist",
                 ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
-                "out", "logs", "temp", "tmp", ".mvn", ".gradle"
+                "out", "logs", "temp", "tmp", ".mvn", ".gradle", "classes"
         );
 
-        // Text file extensions - more comprehensive list
+        // Text file extensions
         Set<String> textExtensions = Set.of(
                 ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h", ".hpp",
                 ".html", ".css", ".scss", ".sass", ".less",
@@ -348,141 +296,207 @@ public class FacultyDashboardService {
                 ".php", ".rb", ".go", ".rs", ".kt", ".swift"
         );
 
-        // Priority files to always include (case-insensitive)
-        Set<String> priorityFiles = Set.of(
-                "readme.md", "readme.txt", "package.json", "pom.xml", 
-                "build.gradle", "requirements.txt", "cargo.toml", 
-                "go.mod", "application.properties", "application.yml"
+        // Priority files
+        Set<String> priorityFilesLower = Set.of(
+                "readme.md", "readme.txt", "readme",
+                "package.json", "pom.xml", "build.gradle", "settings.gradle",
+                "requirements.txt", "cargo.toml", "go.mod",
+                "application.properties", "application.yml", "application.yaml"
         );
 
-        // Collect all eligible files
-        List<Path> allFiles = new ArrayList<>();
-        
-        Files.walk(projectPath)
-                .filter(Files::isRegularFile)
-                .filter(path -> {
-                    // Check if file is in a skip directory
-                    String pathStr = path.toString();
+        List<ZipFileEntry> allFiles = new ArrayList<>();
+        List<ZipFileEntry> priorityFiles = new ArrayList<>();
+
+        // First pass: collect all entries
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (!entry.isDirectory()) {
+                    String entryName = entry.getName();
+                    
+                    // Check if in skip directory
+                    boolean inSkipDir = false;
                     for (String skipDir : skipDirs) {
-                        if (pathStr.contains(File.separator + skipDir + File.separator) ||
-                            pathStr.contains("/" + skipDir + "/")) {
-                            return false;
+                        if (entryName.contains("/" + skipDir + "/") || 
+                            entryName.startsWith(skipDir + "/")) {
+                            inSkipDir = true;
+                            break;
                         }
                     }
-                    return true;
-                })
-                .forEach(allFiles::add);
 
-        System.out.println("Total files found (after filtering): " + allFiles.size());
+                    if (inSkipDir) {
+                        zis.closeEntry();
+                        continue;
+                    }
 
-        // Separate priority and regular files
-        List<Path> priorityFilePaths = new ArrayList<>();
-        List<Path> regularFilePaths = new ArrayList<>();
+                    String fileName = entryName.substring(entryName.lastIndexOf('/') + 1).toLowerCase();
+                    String extension = "";
+                    int lastDot = fileName.lastIndexOf('.');
+                    if (lastDot > 0) {
+                        extension = fileName.substring(lastDot).toLowerCase();
+                    }
 
-        for (Path file : allFiles) {
-            String fileName = file.getFileName().toString().toLowerCase();
-            String extension = "";
-            
-            int lastDot = fileName.lastIndexOf('.');
-            if (lastDot > 0) {
-                extension = fileName.substring(lastDot);
-            }
-
-            // Check if it's a priority file
-            if (priorityFiles.contains(fileName)) {
-                priorityFilePaths.add(file);
-            } 
-            // Check if it has a text extension
-            else if (textExtensions.contains(extension)) {
-                regularFilePaths.add(file);
+                    // Read file content
+                    byte[] fileBytes = zis.readAllBytes();
+                    
+                    // Check if priority file
+                    if (priorityFilesLower.contains(fileName)) {
+                        priorityFiles.add(new ZipFileEntry(entryName, fileBytes));
+                    } 
+                    // Check if has text extension
+                    else if (textExtensions.contains(extension)) {
+                        allFiles.add(new ZipFileEntry(entryName, fileBytes));
+                    }
+                }
+                zis.closeEntry();
             }
         }
 
-        System.out.println("Priority files found: " + priorityFilePaths.size());
-        System.out.println("Regular text files found: " + regularFilePaths.size());
+        System.out.println("Found " + priorityFiles.size() + " priority files");
+        System.out.println("Found " + allFiles.size() + " regular text files");
 
-        // Read priority files first (all of them)
-        for (Path file : priorityFilePaths) {
+        // Read priority files first
+        for (ZipFileEntry fileEntry : priorityFiles) {
             try {
-                String content = Files.readString(file);
-                String relativePath = projectPath.relativize(file).toString();
-
-                // Limit content length
+                String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+                
                 if (content.length() > 5000) {
                     content = content.substring(0, 5000) + "\n... (truncated)";
                 }
 
-                filesContent.put(relativePath, content);
-                System.out.println("Read priority file: " + relativePath);
+                filesContent.put(fileEntry.name, content);
+                System.out.println("✓ Read priority file: " + fileEntry.name);
             } catch (Exception e) {
-                System.err.println("Could not read priority file: " + file.getFileName() + " - " + e.getMessage());
+                System.err.println("✗ Failed to read priority file: " + fileEntry.name);
             }
         }
 
-        // Read regular files (up to 15 more files)
+        // Read up to 15 regular files
         int regularFilesRead = 0;
-        int maxRegularFiles = 15;
-        
-        for (Path file : regularFilePaths) {
-            if (regularFilesRead >= maxRegularFiles) {
+        for (ZipFileEntry fileEntry : allFiles) {
+            if (regularFilesRead >= 15) {
                 break;
             }
 
             try {
-                String content = Files.readString(file);
-                String relativePath = projectPath.relativize(file).toString();
-
-                // Limit content length
+                String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+                
                 if (content.length() > 3000) {
                     content = content.substring(0, 3000) + "\n... (truncated)";
                 }
 
-                filesContent.put(relativePath, content);
+                filesContent.put(fileEntry.name, content);
                 regularFilesRead++;
-                System.out.println("Read regular file: " + relativePath);
+                System.out.println("✓ Read file: " + fileEntry.name);
             } catch (Exception e) {
-                System.err.println("Could not read file: " + file.getFileName() + " - " + e.getMessage());
+                System.err.println("✗ Failed to read file: " + fileEntry.name);
             }
         }
 
         System.out.println("Total files read for analysis: " + filesContent.size());
-        
-        // If still no files, try to read ANY text file
-        if (filesContent.isEmpty()) {
-            System.out.println("No files with standard extensions found, trying all text files...");
-            
-            for (Path file : allFiles) {
-                if (filesContent.size() >= 5) break; // At least get 5 files
-                
-                try {
-                    // Try to read as text
-                    String content = Files.readString(file);
-                    String relativePath = projectPath.relativize(file).toString();
-                    
-                    if (content.length() > 3000) {
-                        content = content.substring(0, 3000) + "\n... (truncated)";
+        return filesContent;
+    }
+
+    // Helper class to store ZIP entry data
+    private static class ZipFileEntry {
+        String name;
+        byte[] content;
+
+        ZipFileEntry(String name, byte[] content) {
+            this.name = name;
+            this.content = content;
+        }
+    }
+
+    // Helper method to list files in ZIP
+    private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
+        List<FileInfo> fileInfos = new ArrayList<>();
+        Set<String> addedDirectories = new HashSet<>();
+
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                String entryName = entry.getName();
+
+                // Filter by prefix if provided
+                if (prefix != null && !prefix.isEmpty()) {
+                    if (!entryName.startsWith(prefix + "/") && !entryName.equals(prefix)) {
+                        continue;
                     }
-                    
-                    filesContent.put(relativePath, content);
-                    System.out.println("Read fallback file: " + relativePath);
-                } catch (Exception e) {
-                    // Skip binary files or unreadable files
+                    // Remove prefix from entry name
+                    entryName = entryName.substring(prefix.length());
+                    if (entryName.startsWith("/")) {
+                        entryName = entryName.substring(1);
+                    }
+                }
+
+                // Skip if empty
+                if (entryName.isEmpty()) {
                     continue;
                 }
+
+                // Get first level only
+                String[] parts = entryName.split("/");
+                String firstName = parts[0];
+
+                if (parts.length > 1) {
+                    // It's in a subdirectory, add the directory
+                    if (!addedDirectories.contains(firstName)) {
+                        String dirPath = prefix != null && !prefix.isEmpty() ? 
+                                prefix + "/" + firstName : firstName;
+                        fileInfos.add(new FileInfo(firstName, dirPath, true, "-"));
+                        addedDirectories.add(firstName);
+                    }
+                } else {
+                    // It's a file in current directory
+                    String filePath = prefix != null && !prefix.isEmpty() ? 
+                            prefix + "/" + firstName : firstName;
+                    String size = formatFileSize(entry.getSize());
+                    fileInfos.add(new FileInfo(firstName, filePath, false, size));
+                }
+
+                zis.closeEntry();
             }
         }
 
-    } catch (IOException e) {
-        System.err.println("Error reading project files: " + e.getMessage());
-        e.printStackTrace();
-        throw new RuntimeException("Error reading project files: " + e.getMessage());
+        return fileInfos;
     }
 
-    System.out.println("Final files content map size: " + filesContent.size());
-    return filesContent;
-}
+    // Helper method to extract file content from ZIP
+    private String extractFileFromZip(byte[] zipBytes, String filePath) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entry.getName().equals(filePath)) {
+                    if (entry.isDirectory()) {
+                        throw new RuntimeException("Cannot read content of a directory");
+                    }
+                    byte[] fileBytes = zis.readAllBytes();
+                    return new String(fileBytes, StandardCharsets.UTF_8);
+                }
+                zis.closeEntry();
+            }
+        }
+        throw new RuntimeException("File not found in project: " + filePath);
+    }
 
-    
+    // Helper method to extract file bytes from ZIP
+    private byte[] extractFileBytesFromZip(byte[] zipBytes, String filePath) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entry.getName().equals(filePath)) {
+                    if (entry.isDirectory()) {
+                        throw new RuntimeException("Cannot download folders. Only individual files can be downloaded.");
+                    }
+                    return zis.readAllBytes();
+                }
+                zis.closeEntry();
+            }
+        }
+        throw new RuntimeException("File not found in project: " + filePath);
+    }
+
     private String formatFileSize(long sizeInBytes) {
         if (sizeInBytes < 1024) {
             return sizeInBytes + " B";
