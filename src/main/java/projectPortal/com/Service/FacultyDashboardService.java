@@ -86,7 +86,7 @@ public class FacultyDashboardService {
         if (student != null) {
             details.setStudentName(student.getStudentName());
             details.setStudentEmail(student.getUser().getEmail());
-            details.setStudentRollNo(student.getRollNo());
+
         }
 
         return details;
