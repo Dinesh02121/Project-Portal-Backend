@@ -276,127 +276,161 @@ public class FacultyDashboardService {
     }
 
     // Helper method to extract and read files from ZIP
-    private Map<String, String> extractAndReadZipFiles(byte[] zipBytes) throws IOException {
-        Map<String, String> filesContent = new HashMap<>();
+   private Map<String, String> extractAndReadZipFiles(byte[] zipBytes) throws IOException {
+    Map<String, String> filesContent = new HashMap<>();
 
-        // Skip directories
-        Set<String> skipDirs = Set.of(
-                "node_modules", "venv", "__pycache__", "build", "dist",
-                ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
-                "out", "logs", "temp", "tmp", ".mvn", ".gradle", "classes"
-        );
+    System.out.println("\n=== EXTRACTING FILES FROM ZIP ===");
 
-        // Text file extensions
-        Set<String> textExtensions = Set.of(
-                ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h", ".hpp",
-                ".html", ".css", ".scss", ".sass", ".less",
-                ".json", ".xml", ".yaml", ".yml", ".toml",
-                ".md", ".txt", ".properties", ".env",
-                ".sql", ".sh", ".bash", ".gradle", ".jsp", ".jspx",
-                ".php", ".rb", ".go", ".rs", ".kt", ".swift"
-        );
+    // Skip directories
+    Set<String> skipDirs = Set.of(
+            "node_modules", "venv", "__pycache__", "build", "dist",
+            ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
+            "out", "logs", "temp", "tmp", ".mvn", ".gradle", "classes"
+    );
 
-        // Priority files
-        Set<String> priorityFilesLower = Set.of(
-                "readme.md", "readme.txt", "readme",
-                "package.json", "pom.xml", "build.gradle", "settings.gradle",
-                "requirements.txt", "cargo.toml", "go.mod",
-                "application.properties", "application.yml", "application.yaml"
-        );
+    // Text file extensions
+    Set<String> textExtensions = Set.of(
+            ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h",
+            ".html", ".css", ".json", ".xml", ".yaml", ".yml",
+            ".md", ".txt", ".properties", ".sql", ".sh", ".gradle", ".jsp"
+    );
 
-        List<ZipFileEntry> allFiles = new ArrayList<>();
-        List<ZipFileEntry> priorityFiles = new ArrayList<>();
+    // Priority files (always include)
+    Set<String> priorityFilesLower = Set.of(
+            "readme.md", "readme.txt", "readme",
+            "package.json", "pom.xml", "build.gradle",
+            "requirements.txt", "application.properties", "application.yml"
+    );
 
-        // First pass: collect all entries
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                if (!entry.isDirectory()) {
-                    String entryName = entry.getName();
-                    
-                    // Check if in skip directory
-                    boolean inSkipDir = false;
-                    for (String skipDir : skipDirs) {
-                        if (entryName.contains("/" + skipDir + "/") || 
-                            entryName.startsWith(skipDir + "/")) {
-                            inSkipDir = true;
-                            break;
-                        }
-                    }
+    List<ZipFileEntry> allFiles = new ArrayList<>();
+    List<ZipFileEntry> priorityFiles = new ArrayList<>();
 
-                    if (inSkipDir) {
-                        zis.closeEntry();
-                        continue;
-                    }
-
-                    String fileName = entryName.substring(entryName.lastIndexOf('/') + 1).toLowerCase();
-                    String extension = "";
-                    int lastDot = fileName.lastIndexOf('.');
-                    if (lastDot > 0) {
-                        extension = fileName.substring(lastDot).toLowerCase();
-                    }
-
-                    // Read file content
-                    byte[] fileBytes = zis.readAllBytes();
-                    
-                    // Check if priority file
-                    if (priorityFilesLower.contains(fileName)) {
-                        priorityFiles.add(new ZipFileEntry(entryName, fileBytes));
-                    } 
-                    // Check if has text extension
-                    else if (textExtensions.contains(extension)) {
-                        allFiles.add(new ZipFileEntry(entryName, fileBytes));
-                    }
-                }
-                zis.closeEntry();
-            }
-        }
-
-        System.out.println("Found " + priorityFiles.size() + " priority files");
-        System.out.println("Found " + allFiles.size() + " regular text files");
-
-        // Read priority files first
-        for (ZipFileEntry fileEntry : priorityFiles) {
-            try {
-                String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+    // First pass: collect all entries
+    try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+        ZipEntry entry;
+        while ((entry = zis.getNextEntry()) != null) {
+            if (!entry.isDirectory()) {
+                String entryName = entry.getName();
                 
-                if (content.length() > 5000) {
-                    content = content.substring(0, 5000) + "\n... (truncated)";
+                // Check if in skip directory
+                boolean inSkipDir = false;
+                for (String skipDir : skipDirs) {
+                    if (entryName.contains("/" + skipDir + "/") || 
+                        entryName.startsWith(skipDir + "/")) {
+                        inSkipDir = true;
+                        break;
+                    }
                 }
 
-                filesContent.put(fileEntry.name, content);
-                System.out.println("✓ Read priority file: " + fileEntry.name);
-            } catch (Exception e) {
-                System.err.println("✗ Failed to read priority file: " + fileEntry.name);
-            }
-        }
+                if (inSkipDir) {
+                    zis.closeEntry();
+                    continue;
+                }
 
-        // Read up to 15 regular files
-        int regularFilesRead = 0;
-        for (ZipFileEntry fileEntry : allFiles) {
-            if (regularFilesRead >= 15) {
-                break;
-            }
+                String fileName = entryName.substring(entryName.lastIndexOf('/') + 1).toLowerCase();
+                String extension = "";
+                int lastDot = fileName.lastIndexOf('.');
+                if (lastDot > 0) {
+                    extension = fileName.substring(lastDot).toLowerCase();
+                }
 
-            try {
-                String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+                // Read file content
+                byte[] fileBytes = zis.readAllBytes();
                 
-                if (content.length() > 3000) {
-                    content = content.substring(0, 3000) + "\n... (truncated)";
+                // SKIP FILES LARGER THAN 50KB (prevents memory issues)
+                if (fileBytes.length > 51200) {
+                    System.out.println("⚠ Skipping large file: " + fileName + " (" + fileBytes.length + " bytes)");
+                    zis.closeEntry();
+                    continue;
                 }
 
-                filesContent.put(fileEntry.name, content);
-                regularFilesRead++;
-                System.out.println("✓ Read file: " + fileEntry.name);
-            } catch (Exception e) {
-                System.err.println("✗ Failed to read file: " + fileEntry.name);
+                // Check if priority file
+                if (priorityFilesLower.contains(fileName)) {
+                    priorityFiles.add(new ZipFileEntry(entryName, fileBytes));
+                } 
+                // Check if has text extension
+                else if (textExtensions.contains(extension)) {
+                    allFiles.add(new ZipFileEntry(entryName, fileBytes));
+                }
             }
+            zis.closeEntry();
         }
-
-        System.out.println("Total files read for analysis: " + filesContent.size());
-        return filesContent;
     }
 
+    System.out.println("Found " + priorityFiles.size() + " priority files");
+    System.out.println("Found " + allFiles.size() + " regular text files");
+
+    // Read ALL priority files (they're usually small)
+    for (ZipFileEntry fileEntry : priorityFiles) {
+        try {
+            String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+            
+            // Limit to 3000 characters per file
+            if (content.length() > 3000) {
+                content = content.substring(0, 3000) + "\n... (truncated)";
+            }
+
+            filesContent.put(fileEntry.name, content);
+            System.out.println("✓ Read priority file: " + fileEntry.name + " (" + content.length() + " chars)");
+        } catch (Exception e) {
+            System.out.println("✗ Failed to read priority file: " + fileEntry.name);
+        }
+    }
+
+    // Read up to 10 regular files (REDUCED from 15)
+    int regularFilesRead = 0;
+    int maxRegularFiles = 10; // REDUCED
+    
+    for (ZipFileEntry fileEntry : allFiles) {
+        if (regularFilesRead >= maxRegularFiles) {
+            break;
+        }
+
+        try {
+            String content = new String(fileEntry.content, StandardCharsets.UTF_8);
+            
+            // Limit to 2000 characters per file (REDUCED from 3000)
+            if (content.length() > 2000) {
+                content = content.substring(0, 2000) + "\n... (truncated)";
+            }
+
+            filesContent.put(fileEntry.name, content);
+            regularFilesRead++;
+            System.out.println("✓ Read file: " + fileEntry.name + " (" + content.length() + " chars)");
+        } catch (Exception e) {
+            System.out.println("✗ Failed to read file: " + fileEntry.name);
+        }
+    }
+
+    // Calculate total payload size
+    int totalSize = filesContent.values().stream()
+            .mapToInt(String::length)
+            .sum();
+    
+    System.out.println("\n=== SUMMARY ===");
+    System.out.println("Total files sent: " + filesContent.size());
+    System.out.println("Total payload size: " + (totalSize / 1024) + " KB");
+    
+    // If payload is still too large, remove more files
+    if (totalSize > 100000) { // 100KB limit
+        System.out.println("⚠ Payload too large, reducing further...");
+        Map<String, String> reducedContent = new HashMap<>();
+        int currentSize = 0;
+        
+        for (Map.Entry<String, String> entry : filesContent.entrySet()) {
+            if (currentSize + entry.getValue().length() > 100000) {
+                break;
+            }
+            reducedContent.put(entry.getKey(), entry.getValue());
+            currentSize += entry.getValue().length();
+        }
+        
+        filesContent = reducedContent;
+        System.out.println("Reduced to " + filesContent.size() + " files");
+    }
+    
+    return filesContent;
+}
     // Helper class to store ZIP entry data
     private static class ZipFileEntry {
         String name;
