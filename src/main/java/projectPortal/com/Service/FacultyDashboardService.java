@@ -24,12 +24,12 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 @Service
 public class FacultyDashboardService {
+    
     private final FacultyRepository facultyRepository;
     private final ProjectRepository projectRepository;
     private final ProjectMemberRepository projectMemberRepository;
@@ -67,7 +67,6 @@ public class FacultyDashboardService {
     }
 
     public ProjectDetailsDTO getProjectDetails(Long projectId, String facultyEmail) {
-        // Find the project
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -104,9 +103,6 @@ public class FacultyDashboardService {
         );
     }
 
-    /**
-     * Get all projects assigned to faculty (all statuses)
-     */
     public List<ProjectEntity> getAllAssignedProjects(String email) {
         FacultyEntity faculty = facultyRepository
                 .findByUser_Email(email)
@@ -115,9 +111,6 @@ public class FacultyDashboardService {
         return projectRepository.findByAssignedFaculty(faculty);
     }
 
-    /**
-     * Get accepted projects
-     */
     public List<ProjectEntity> getAcceptedProjects(String email) {
         FacultyEntity faculty = facultyRepository
                 .findByUser_Email(email)
@@ -164,11 +157,8 @@ public class FacultyDashboardService {
         return "Progress Saved Successfully";
     }
 
-    // ==================== FIXED FILE OPERATIONS - NOW USING SUPABASE ====================
+    // ==================== FILE OPERATIONS WITH SUPABASE ====================
 
-    /**
-     * Get project files from Supabase ZIP storage
-     */
     public List<FileInfo> getProjectFiles(Long projectId, String path, String email) {
         FacultyEntity faculty = facultyRepository
                 .findByUser_Email(email)
@@ -201,9 +191,6 @@ public class FacultyDashboardService {
         }
     }
 
-    /**
-     * Get file content from Supabase ZIP storage
-     */
     public String getFileContent(Long projectId, String path, String email) {
         if (path == null || path.isEmpty()) {
             throw new RuntimeException("File path is required");
@@ -240,9 +227,6 @@ public class FacultyDashboardService {
         }
     }
 
-    /**
-     * Download file from Supabase ZIP storage
-     */
     public Resource downloadFile(Long projectId, String path, String email) {
         if (path == null || path.isEmpty()) {
             throw new RuntimeException("File path is required");
@@ -283,9 +267,6 @@ public class FacultyDashboardService {
 
     // ==================== HELPER METHODS ====================
 
-    /**
-     * List files in ZIP - same logic as StudentDashboardService
-     */
     private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
         List<FileInfo> fileInfos = new ArrayList<>();
         Set<String> addedDirectories = new HashSet<>();
@@ -375,9 +356,6 @@ public class FacultyDashboardService {
         return fileInfos;
     }
 
-    /**
-     * Extract file content from ZIP as String
-     */
     private String extractFileFromZip(byte[] zipBytes, String filePath) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
@@ -395,9 +373,6 @@ public class FacultyDashboardService {
         throw new RuntimeException("File not found in project: " + filePath);
     }
 
-    /**
-     * Extract file bytes from ZIP for downloading
-     */
     private byte[] extractFileBytesFromZip(byte[] zipBytes, String filePath) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
@@ -414,9 +389,6 @@ public class FacultyDashboardService {
         throw new RuntimeException("File not found in project: " + filePath);
     }
 
-    /**
-     * Format file size in human-readable format
-     */
     private String formatFileSize(long sizeInBytes) {
         if (sizeInBytes < 1024) {
             return sizeInBytes + " B";
