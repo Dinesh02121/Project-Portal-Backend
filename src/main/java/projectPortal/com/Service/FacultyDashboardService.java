@@ -42,7 +42,7 @@ public class FacultyDashboardService {
     @Autowired
     private SupabaseStorageService supabaseStorage;
 
-    @Value("${ai.analysis.url:http://localhost:8000}")
+    @Value("${ai.analysis.url:https://project-portal-review.onrender.com}")
     private String aiAnalysisUrl;
 
     public FacultyDashboardService(
