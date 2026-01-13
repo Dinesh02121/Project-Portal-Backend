@@ -1,78 +1,73 @@
 package projectPortal.com.Service;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 import projectPortal.com.DTO.FacultyDashboardSummary;
 import projectPortal.com.DTO.FacultyProfile;
 import projectPortal.com.DTO.FileInfo;
 import projectPortal.com.DTO.ProjectDetailsDTO;
 import projectPortal.com.Entity.FacultyEntity;
 import projectPortal.com.Entity.ProjectEntity;
+import projectPortal.com.Entity.StudentEntity;
 import projectPortal.com.Repository.FacultyRepository;
 import projectPortal.com.Repository.ProjectRepository;
+import projectPortal.com.Repository.ProjectMemberRepository;
 import projectPortal.com.enums.ProjectStatus;
 import projectPortal.com.enums.Role;
 
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 @Service
 public class FacultyDashboardService {
-    
-    @Autowired
-    private SupabaseStorageService supabaseStorage;
-    
     private final FacultyRepository facultyRepository;
     private final ProjectRepository projectRepository;
-    private final RestTemplate restTemplate;
+    private final ProjectMemberRepository projectMemberRepository;
 
-    @Value("${ai.service.url}")
-    private String aiServiceUrl;
+    @Autowired
+    private SupabaseStorageService supabaseStorage;
 
     public FacultyDashboardService(
             FacultyRepository facultyRepository, 
-            ProjectRepository projectRepository) {
+            ProjectRepository projectRepository,
+            ProjectMemberRepository projectMemberRepository) {
         this.facultyRepository = facultyRepository;
         this.projectRepository = projectRepository;
-        this.restTemplate = new RestTemplate();
+        this.projectMemberRepository = projectMemberRepository;
     }
 
-    public FacultyProfile facultyProfile(String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
-                .orElseThrow(() -> new RuntimeException("Not Found With This Email"));
+    public FacultyProfile facultyProfile(String email){
+        FacultyEntity faculty = facultyRepository.findByUser_Email(email).orElseThrow(()->
+                new RuntimeException("Not Found With This Email"));
 
-        return new FacultyProfile(
-                faculty.getFacultyName(), 
-                faculty.getDepartment(), 
-                email, 
-                Role.FACULTY
+        return new FacultyProfile(faculty.getFacultyName(), faculty.getDepartment(), email, Role.FACULTY);
+    }
+
+    public FacultyDashboardSummary getSummary(String email){
+        FacultyEntity faculty = facultyRepository.findByUser_Email(email).orElseThrow(
+                ()-> new RuntimeException("Faculty Not Registered With This Email id")
         );
-    }
-
-    public FacultyDashboardSummary getSummary(String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
-                .orElseThrow(() -> new RuntimeException("Faculty Not Registered With This Email id"));
 
         long total = projectRepository.findByAssignedFaculty(faculty).size();
-        long pending = projectRepository.findByAssignedFacultyAndStatus(
-                faculty, ProjectStatus.FACULTY_REQUESTED).size();
-        long accepted = projectRepository.findByAssignedFacultyAndStatus(
-                faculty, ProjectStatus.FACULTY_ACCEPTED).size();
-        long rejected = projectRepository.findByAssignedFacultyAndStatus(
-                faculty, ProjectStatus.REJECTED).size();
+        long pending = projectRepository.findByAssignedFacultyAndStatus(faculty, ProjectStatus.FACULTY_REQUESTED).size();
+        long accepted = projectRepository.findByAssignedFacultyAndStatus(faculty, ProjectStatus.FACULTY_ACCEPTED).size();
+        long rejected = projectRepository.findByAssignedFacultyAndStatus(faculty, ProjectStatus.REJECTED).size();
 
         return new FacultyDashboardSummary(total, pending, accepted, rejected);
     }
 
     public ProjectDetailsDTO getProjectDetails(Long projectId, String facultyEmail) {
+        // Find the project
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -87,11 +82,20 @@ public class FacultyDashboardService {
         details.setSubmittedAt(project.getSubmittedAt() != null ?
                 project.getSubmittedAt().toString() : null);
 
+        // Add student details
+        StudentEntity student = project.getCreatedBy();
+        if (student != null) {
+            details.setStudentName(student.getStudentName());
+            details.setStudentEmail(student.getUser().getEmail());
+            details.setStudentRollNo(student.getRollNo());
+        }
+
         return details;
     }
 
     public List<ProjectEntity> getRequestedProjects(String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
                 .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
         return projectRepository.findByAssignedFacultyAndStatus(
@@ -100,25 +104,58 @@ public class FacultyDashboardService {
         );
     }
 
+    /**
+     * Get all projects assigned to faculty (all statuses)
+     */
+    public List<ProjectEntity> getAllAssignedProjects(String email) {
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
+                .orElseThrow(() -> new RuntimeException("Faculty not found"));
+
+        return projectRepository.findByAssignedFaculty(faculty);
+    }
+
+    /**
+     * Get accepted projects
+     */
+    public List<ProjectEntity> getAcceptedProjects(String email) {
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
+                .orElseThrow(() -> new RuntimeException("Faculty not found"));
+
+        return projectRepository.findByAssignedFacultyAndStatus(
+                faculty,
+                ProjectStatus.FACULTY_ACCEPTED
+        );
+    }
+
     public String respondToProject(Long projectId, boolean accept, String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
                 .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
-        if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
+        if (!project.getAssignedFaculty()
+                .getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized action");
         }
 
-        project.setStatus(accept ? 
-                ProjectStatus.FACULTY_ACCEPTED : ProjectStatus.REJECTED);
+        project.setStatus(
+                accept
+                        ? ProjectStatus.FACULTY_ACCEPTED
+                        : ProjectStatus.REJECTED
+        );
+
         projectRepository.save(project);
 
-        return accept ? "Project accepted successfully" : "Project rejected";
+        return accept
+                ? "Project accepted successfully"
+                : "Project rejected";
     }
 
-    public String setProgress(Long projectId, int progress) {
+    public String setProgress(Long projectId, int progress){
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
@@ -127,13 +164,20 @@ public class FacultyDashboardService {
         return "Progress Saved Successfully";
     }
 
+    // ==================== FIXED FILE OPERATIONS - NOW USING SUPABASE ====================
+
+    /**
+     * Get project files from Supabase ZIP storage
+     */
     public List<FileInfo> getProjectFiles(Long projectId, String path, String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
                 .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
@@ -141,6 +185,10 @@ public class FacultyDashboardService {
         try {
             // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
+            if (zipPath == null || zipPath.isEmpty()) {
+                throw new RuntimeException("Project ZIP not found in storage");
+            }
+
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
             // List files in ZIP
@@ -153,13 +201,22 @@ public class FacultyDashboardService {
         }
     }
 
+    /**
+     * Get file content from Supabase ZIP storage
+     */
     public String getFileContent(Long projectId, String path, String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+        if (path == null || path.isEmpty()) {
+            throw new RuntimeException("File path is required");
+        }
+
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
                 .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
@@ -167,6 +224,10 @@ public class FacultyDashboardService {
         try {
             // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
+            if (zipPath == null || zipPath.isEmpty()) {
+                throw new RuntimeException("Project ZIP not found in storage");
+            }
+
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
             // Extract specific file content from ZIP
@@ -179,13 +240,22 @@ public class FacultyDashboardService {
         }
     }
 
+    /**
+     * Download file from Supabase ZIP storage
+     */
     public Resource downloadFile(Long projectId, String path, String email) {
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
+        if (path == null || path.isEmpty()) {
+            throw new RuntimeException("File path is required");
+        }
+
+        FacultyEntity faculty = facultyRepository
+                .findByUser_Email(email)
                 .orElseThrow(() -> new RuntimeException("Faculty not found"));
 
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
@@ -193,6 +263,10 @@ public class FacultyDashboardService {
         try {
             // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
+            if (zipPath == null || zipPath.isEmpty()) {
+                throw new RuntimeException("Project ZIP not found in storage");
+            }
+
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
             // Extract specific file from ZIP
@@ -207,300 +281,59 @@ public class FacultyDashboardService {
         }
     }
 
-    // AI Analysis Method
-    public Map<String, Object> analyzeProject(Long projectId, String email) {
-        System.out.println("=== PROJECT ANALYSIS DEBUG ===");
-        System.out.println("Project ID: " + projectId);
-        
-        // Verify faculty access
-        FacultyEntity faculty = facultyRepository.findByUser_Email(email)
-                .orElseThrow(() -> new RuntimeException("Faculty not found"));
+    // ==================== HELPER METHODS ====================
 
-        ProjectEntity project = projectRepository.findById(projectId)
-                .orElseThrow(() -> new RuntimeException("Project not found"));
+    /**
+     * List files in ZIP - same logic as StudentDashboardService
+     */
+    private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
+        List<FileInfo> fileInfos = new ArrayList<>();
+        Set<String> addedDirectories = new HashSet<>();
 
-        if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
-            throw new RuntimeException("Unauthorized: You are not assigned to this project");
-        }
-
-        System.out.println("Project Title: " + project.getTitle());
-        System.out.println("ZIP Path in Supabase: " + project.getProjectZipPath());
-
-        try {
-            // Download ZIP from Supabase
-            String zipPath = project.getProjectZipPath();
-            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
-            
-            System.out.println("✓ Downloaded ZIP from Supabase, size: " + zipBytes.length + " bytes");
-
-            // Extract and read files from ZIP
-            Map<String, String> filesContent = extractAndReadZipFiles(zipBytes);
-
-            if (filesContent.isEmpty()) {
-                throw new RuntimeException("No readable files found in project ZIP");
-            }
-
-            System.out.println("✓ Extracted " + filesContent.size() + " files from ZIP");
-            System.out.println("Files: " + filesContent.keySet());
-
-            // Prepare request for Python AI service
-            Map<String, Object> analysisRequest = new HashMap<>();
-            analysisRequest.put("project_name", project.getTitle());
-            analysisRequest.put("student_description", project.getDescription());
-            analysisRequest.put("files_content", filesContent);
-
-            System.out.println("Calling AI service at: " + aiServiceUrl + "/analyze-content");
-
-            // Call Python AI service
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(analysisRequest, headers);
-
-            ResponseEntity<Map> response = restTemplate.postForEntity(
-                    aiServiceUrl + "/analyze-content",
-                    entity,
-                    Map.class
-            );
-
-            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-                System.out.println("✓ AI Analysis successful!");
-                return response.getBody();
-            } else {
-                throw new RuntimeException("AI service returned empty response");
-            }
-        } catch (Exception e) {
-            System.err.println("AI Service Error: " + e.getMessage());
-            e.printStackTrace();
-            throw new RuntimeException("Failed to analyze project: " + e.getMessage());
-        }
-    }
-
-    // Helper method to extract and read files from ZIP
-   private Map<String, String> extractAndReadZipFiles(byte[] zipBytes) throws IOException {
-    Map<String, String> filesContent = new HashMap<>();
-
-    System.out.println("\n=== EXTRACTING FILES FROM ZIP ===");
-
-    // Skip directories
-    Set<String> skipDirs = Set.of(
-            "node_modules", "venv", "__pycache__", "build", "dist",
-            ".git", "target", "bin", "obj", ".next", ".nuxt", ".idea",
-            "out", "logs", "temp", "tmp", ".mvn", ".gradle", "classes"
-    );
-
-    // Text file extensions
-    Set<String> textExtensions = Set.of(
-            ".java", ".js", ".jsx", ".ts", ".tsx", ".py", ".cpp", ".c", ".h",
-            ".html", ".css", ".json", ".xml", ".yaml", ".yml",
-            ".md", ".txt", ".properties", ".sql", ".sh", ".gradle", ".jsp"
-    );
-
-    // Priority files (always include)
-    Set<String> priorityFilesLower = Set.of(
-            "readme.md", "readme.txt", "readme",
-            "package.json", "pom.xml", "build.gradle",
-            "requirements.txt", "application.properties", "application.yml"
-    );
-
-    List<ZipFileEntry> allFiles = new ArrayList<>();
-    List<ZipFileEntry> priorityFiles = new ArrayList<>();
-
-    // First pass: collect all entries
-    try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
-        ZipEntry entry;
-        while ((entry = zis.getNextEntry()) != null) {
-            if (!entry.isDirectory()) {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
                 String entryName = entry.getName();
-                
-                // Check if in skip directory
-                boolean inSkipDir = false;
-                for (String skipDir : skipDirs) {
-                    if (entryName.contains("/" + skipDir + "/") || 
-                        entryName.startsWith(skipDir + "/")) {
-                        inSkipDir = true;
-                        break;
+
+                // Skip macOS metadata files
+                if (entryName.contains("__MACOSX") || entryName.contains(".DS_Store")) {
+                    continue;
+                }
+
+                // Filter by prefix if provided
+                if (prefix != null && !prefix.isEmpty()) {
+                    String normalizedPrefix = prefix.endsWith("/") ? prefix : prefix + "/";
+                    
+                    if (!entryName.startsWith(normalizedPrefix) && !entryName.equals(prefix)) {
+                        continue;
                     }
+                    
+                    // Remove prefix from entry name
+                    entryName = entryName.substring(normalizedPrefix.length());
                 }
 
-                if (inSkipDir) {
-                    zis.closeEntry();
+                // Skip if empty or just "/"
+                if (entryName.isEmpty() || entryName.equals("/")) {
                     continue;
                 }
 
-                String fileName = entryName.substring(entryName.lastIndexOf('/') + 1).toLowerCase();
-                String extension = "";
-                int lastDot = fileName.lastIndexOf('.');
-                if (lastDot > 0) {
-                    extension = fileName.substring(lastDot).toLowerCase();
+                // Remove trailing slash for processing
+                boolean isDirectory = entryName.endsWith("/") || entry.isDirectory();
+                if (entryName.endsWith("/")) {
+                    entryName = entryName.substring(0, entryName.length() - 1);
                 }
 
-                // Read file content
-                byte[] fileBytes = zis.readAllBytes();
-                
-                // SKIP FILES LARGER THAN 50KB (prevents memory issues)
-                if (fileBytes.length > 51200) {
-                    System.out.println("⚠ Skipping large file: " + fileName + " (" + fileBytes.length + " bytes)");
-                    zis.closeEntry();
+                // Skip if still empty
+                if (entryName.isEmpty()) {
                     continue;
                 }
 
-                // Check if priority file
-                if (priorityFilesLower.contains(fileName)) {
-                    priorityFiles.add(new ZipFileEntry(entryName, fileBytes));
-                } 
-                // Check if has text extension
-                else if (textExtensions.contains(extension)) {
-                    allFiles.add(new ZipFileEntry(entryName, fileBytes));
-                }
-            }
-            zis.closeEntry();
-        }
-    }
+                // Get first level only
+                String[] parts = entryName.split("/");
+                String firstName = parts[0];
 
-    System.out.println("Found " + priorityFiles.size() + " priority files");
-    System.out.println("Found " + allFiles.size() + " regular text files");
-
-    // Read ALL priority files (they're usually small)
-    for (ZipFileEntry fileEntry : priorityFiles) {
-        try {
-            String content = new String(fileEntry.content, StandardCharsets.UTF_8);
-            
-            // Limit to 3000 characters per file
-            if (content.length() > 3000) {
-                content = content.substring(0, 3000) + "\n... (truncated)";
-            }
-
-            filesContent.put(fileEntry.name, content);
-            System.out.println("✓ Read priority file: " + fileEntry.name + " (" + content.length() + " chars)");
-        } catch (Exception e) {
-            System.out.println("✗ Failed to read priority file: " + fileEntry.name);
-        }
-    }
-
-    // Read up to 10 regular files (REDUCED from 15)
-    int regularFilesRead = 0;
-    int maxRegularFiles = 10; // REDUCED
-    
-    for (ZipFileEntry fileEntry : allFiles) {
-        if (regularFilesRead >= maxRegularFiles) {
-            break;
-        }
-
-        try {
-            String content = new String(fileEntry.content, StandardCharsets.UTF_8);
-            
-            // Limit to 2000 characters per file (REDUCED from 3000)
-            if (content.length() > 2000) {
-                content = content.substring(0, 2000) + "\n... (truncated)";
-            }
-
-            filesContent.put(fileEntry.name, content);
-            regularFilesRead++;
-            System.out.println("✓ Read file: " + fileEntry.name + " (" + content.length() + " chars)");
-        } catch (Exception e) {
-            System.out.println("✗ Failed to read file: " + fileEntry.name);
-        }
-    }
-
-    // Calculate total payload size
-    int totalSize = filesContent.values().stream()
-            .mapToInt(String::length)
-            .sum();
-    
-    System.out.println("\n=== SUMMARY ===");
-    System.out.println("Total files sent: " + filesContent.size());
-    System.out.println("Total payload size: " + (totalSize / 1024) + " KB");
-    
-    // If payload is still too large, remove more files
-    if (totalSize > 100000) { // 100KB limit
-        System.out.println("⚠ Payload too large, reducing further...");
-        Map<String, String> reducedContent = new HashMap<>();
-        int currentSize = 0;
-        
-        for (Map.Entry<String, String> entry : filesContent.entrySet()) {
-            if (currentSize + entry.getValue().length() > 100000) {
-                break;
-            }
-            reducedContent.put(entry.getKey(), entry.getValue());
-            currentSize += entry.getValue().length();
-        }
-        
-        filesContent = reducedContent;
-        System.out.println("Reduced to " + filesContent.size() + " files");
-    }
-    
-    return filesContent;
-}
-    // Helper class to store ZIP entry data
-    private static class ZipFileEntry {
-        String name;
-        byte[] content;
-
-        ZipFileEntry(String name, byte[] content) {
-            this.name = name;
-            this.content = content;
-        }
-    }
-
-    // Helper method to list files in ZIP
-  private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
-    List<FileInfo> fileInfos = new ArrayList<>();
-    Set<String> addedDirectories = new HashSet<>();
-
-    try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
-        ZipEntry entry;
-        while ((entry = zis.getNextEntry()) != null) {
-            String entryName = entry.getName();
-
-            // Skip macOS metadata files
-            if (entryName.contains("__MACOSX") || entryName.contains(".DS_Store")) {
-                continue;
-            }
-
-            // Filter by prefix if provided
-            if (prefix != null && !prefix.isEmpty()) {
-                String normalizedPrefix = prefix.endsWith("/") ? prefix : prefix + "/";
-                
-                if (!entryName.startsWith(normalizedPrefix) && !entryName.equals(prefix)) {
-                    continue;
-                }
-                
-                // Remove prefix from entry name
-                entryName = entryName.substring(normalizedPrefix.length());
-            }
-
-            // Skip if empty or just "/"
-            if (entryName.isEmpty() || entryName.equals("/")) {
-                continue;
-            }
-
-            // Remove trailing slash for processing
-            boolean isDirectory = entryName.endsWith("/") || entry.isDirectory();
-            if (entryName.endsWith("/")) {
-                entryName = entryName.substring(0, entryName.length() - 1);
-            }
-
-            // Skip if still empty
-            if (entryName.isEmpty()) {
-                continue;
-            }
-
-            // Get first level only
-            String[] parts = entryName.split("/");
-            String firstName = parts[0];
-
-            if (parts.length > 1) {
-                // It's in a subdirectory, add the directory if not already added
-                if (!addedDirectories.contains(firstName)) {
-                    String dirPath = prefix != null && !prefix.isEmpty() ? 
-                            prefix + "/" + firstName : firstName;
-                    fileInfos.add(new FileInfo(firstName, dirPath, true, "-"));
-                    addedDirectories.add(firstName);
-                }
-            } else {
-                // It's in current directory
-                if (isDirectory) {
-                    // Add directory if not already added
+                if (parts.length > 1) {
+                    // It's in a subdirectory, add the directory if not already added
                     if (!addedDirectories.contains(firstName)) {
                         String dirPath = prefix != null && !prefix.isEmpty() ? 
                                 prefix + "/" + firstName : firstName;
@@ -508,30 +341,43 @@ public class FacultyDashboardService {
                         addedDirectories.add(firstName);
                     }
                 } else {
-                    // It's a file - don't add if it's a directory entry we've already processed
-                    if (!addedDirectories.contains(firstName)) {
-                        String filePath = prefix != null && !prefix.isEmpty() ? 
-                                prefix + "/" + firstName : firstName;
-                        String size = formatFileSize(entry.getSize());
-                        fileInfos.add(new FileInfo(firstName, filePath, false, size));
+                    // It's in current directory
+                    if (isDirectory) {
+                        // Add directory if not already added
+                        if (!addedDirectories.contains(firstName)) {
+                            String dirPath = prefix != null && !prefix.isEmpty() ? 
+                                    prefix + "/" + firstName : firstName;
+                            fileInfos.add(new FileInfo(firstName, dirPath, true, "-"));
+                            addedDirectories.add(firstName);
+                        }
+                    } else {
+                        // It's a file
+                        if (!addedDirectories.contains(firstName)) {
+                            String filePath = prefix != null && !prefix.isEmpty() ? 
+                                    prefix + "/" + firstName : firstName;
+                            String size = formatFileSize(entry.getSize());
+                            fileInfos.add(new FileInfo(firstName, filePath, false, size));
+                        }
                     }
                 }
-            }
 
-            zis.closeEntry();
+                zis.closeEntry();
+            }
         }
+
+        // Sort: directories first, then files, both alphabetically
+        fileInfos.sort((a, b) -> {
+            if (a.isDirectory() && !b.isDirectory()) return -1;
+            if (!a.isDirectory() && b.isDirectory()) return 1;
+            return a.getName().compareToIgnoreCase(b.getName());
+        });
+
+        return fileInfos;
     }
 
-    // Sort: directories first, then files, both alphabetically
-    fileInfos.sort((a, b) -> {
-        if (a.isDirectory() && !b.isDirectory()) return -1;
-        if (!a.isDirectory() && b.isDirectory()) return 1;
-        return a.getName().compareToIgnoreCase(b.getName());
-    });
-
-    return fileInfos;
-}
-    // Helper method to extract file content from ZIP
+    /**
+     * Extract file content from ZIP as String
+     */
     private String extractFileFromZip(byte[] zipBytes, String filePath) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
@@ -549,7 +395,9 @@ public class FacultyDashboardService {
         throw new RuntimeException("File not found in project: " + filePath);
     }
 
-    // Helper method to extract file bytes from ZIP
+    /**
+     * Extract file bytes from ZIP for downloading
+     */
     private byte[] extractFileBytesFromZip(byte[] zipBytes, String filePath) throws IOException {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
@@ -566,6 +414,9 @@ public class FacultyDashboardService {
         throw new RuntimeException("File not found in project: " + filePath);
     }
 
+    /**
+     * Format file size in human-readable format
+     */
     private String formatFileSize(long sizeInBytes) {
         if (sizeInBytes < 1024) {
             return sizeInBytes + " B";
