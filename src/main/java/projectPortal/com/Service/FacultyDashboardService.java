@@ -1,9 +1,14 @@
 package projectPortal.com.Service;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestTemplate;
 import projectPortal.com.DTO.FacultyDashboardSummary;
 import projectPortal.com.DTO.FacultyProfile;
 import projectPortal.com.DTO.FileInfo;
@@ -36,6 +41,9 @@ public class FacultyDashboardService {
 
     @Autowired
     private SupabaseStorageService supabaseStorage;
+
+    @Value("${ai.analysis.url:http://localhost:8000}")
+    private String aiAnalysisUrl;
 
     public FacultyDashboardService(
             FacultyRepository facultyRepository, 
@@ -74,7 +82,7 @@ public class FacultyDashboardService {
         details.setProjectId(project.getProjectId());
         details.setTitle(project.getTitle());
         details.setDescription(project.getDescription());
-        details.setProjectPath(project.getExtractedPath());
+        details.setProjectPath(project.getProjectZipPath()); // Return ZIP path for AI analysis
         details.setStatus(project.getStatus().toString());
         details.setCollege(project.getCollege());
         details.setProgress(project.getProgress());
@@ -86,7 +94,6 @@ public class FacultyDashboardService {
         if (student != null) {
             details.setStudentName(student.getStudentName());
             details.setStudentEmail(student.getUser().getEmail());
-
         }
 
         return details;
@@ -155,6 +162,71 @@ public class FacultyDashboardService {
         project.setProgress(progress);
         projectRepository.save(project);
         return "Progress Saved Successfully";
+    }
+
+    // ==================== AI ANALYSIS ====================
+
+    public String runAIAnalysis(Long projectId, String facultyEmail) {
+        try {
+            FacultyEntity faculty = facultyRepository
+                    .findByUser_Email(facultyEmail)
+                    .orElseThrow(() -> new RuntimeException("Faculty not found"));
+
+            ProjectEntity project = projectRepository.findById(projectId)
+                    .orElseThrow(() -> new RuntimeException("Project not found"));
+
+            // Verify faculty is assigned
+            if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
+                throw new RuntimeException("Unauthorized: You are not assigned to this project");
+            }
+
+            // Download ZIP from Supabase
+            String zipPath = project.getProjectZipPath();
+            if (zipPath == null || zipPath.isEmpty()) {
+                throw new RuntimeException("Project ZIP not found in storage");
+            }
+
+            System.out.println("Downloading project ZIP from: " + zipPath);
+            byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+            System.out.println("Downloaded ZIP size: " + zipBytes.length + " bytes");
+
+            // Prepare multipart request
+            RestTemplate restTemplate = new RestTemplate();
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+            body.add("project_name", project.getTitle() != null ? project.getTitle() : "Untitled Project");
+            body.add("student_description", project.getDescription() != null ? project.getDescription() : "No description provided");
+            
+            // Add ZIP file
+            ByteArrayResource fileResource = new ByteArrayResource(zipBytes) {
+                @Override
+                public String getFilename() {
+                    return "project.zip";
+                }
+            };
+            body.add("project_zip", fileResource);
+
+            HttpEntity<MultiValueMap<String, Object>> requestEntity = 
+                new HttpEntity<>(body, headers);
+
+            System.out.println("Sending analysis request to: " + aiAnalysisUrl + "/analyze");
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                aiAnalysisUrl + "/analyze", 
+                requestEntity, 
+                String.class
+            );
+
+            System.out.println("AI Analysis completed successfully");
+            return response.getBody();
+
+        } catch (Exception e) {
+            System.err.println("AI Analysis failed: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("AI Analysis failed: " + e.getMessage());
+        }
     }
 
     // ==================== FILE OPERATIONS WITH SUPABASE ====================
