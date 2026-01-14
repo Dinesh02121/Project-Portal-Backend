@@ -9,10 +9,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.HttpServerErrorException;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import projectPortal.com.DTO.FacultyDashboardSummary;
 import projectPortal.com.DTO.FacultyProfile;
 import projectPortal.com.DTO.FileInfo;
@@ -29,7 +25,6 @@ import projectPortal.com.enums.Role;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -43,27 +38,20 @@ public class FacultyDashboardService {
     private final FacultyRepository facultyRepository;
     private final ProjectRepository projectRepository;
     private final ProjectMemberRepository projectMemberRepository;
-    private final RestTemplate restTemplate;
 
     @Autowired
     private SupabaseStorageService supabaseStorage;
 
-    @Value("${ai.analysis.url:https://project-portal-review.onrender.com}")
+    @Value("${ai.analysis.url:https://ai-analysis-service-pcwd.onrender.com}")
     private String aiAnalysisUrl;
 
     public FacultyDashboardService(
             FacultyRepository facultyRepository, 
             ProjectRepository projectRepository,
-            ProjectMemberRepository projectMemberRepository,
-            RestTemplateBuilder restTemplateBuilder) {
+            ProjectMemberRepository projectMemberRepository) {
         this.facultyRepository = facultyRepository;
         this.projectRepository = projectRepository;
         this.projectMemberRepository = projectMemberRepository;
-        
-        this.restTemplate = restTemplateBuilder
-            .setConnectTimeout(Duration.ofSeconds(30))
-            .setReadTimeout(Duration.ofSeconds(180))
-            .build();
     }
 
     public FacultyProfile facultyProfile(String email){
@@ -94,13 +82,14 @@ public class FacultyDashboardService {
         details.setProjectId(project.getProjectId());
         details.setTitle(project.getTitle());
         details.setDescription(project.getDescription());
-        details.setProjectPath(project.getProjectZipPath());
+        details.setProjectPath(project.getProjectZipPath()); // Return ZIP path for AI analysis
         details.setStatus(project.getStatus().toString());
         details.setCollege(project.getCollege());
         details.setProgress(project.getProgress());
         details.setSubmittedAt(project.getSubmittedAt() != null ?
                 project.getSubmittedAt().toString() : null);
 
+        // Add student details
         StudentEntity student = project.getCreatedBy();
         if (student != null) {
             details.setStudentName(student.getStudentName());
@@ -175,6 +164,8 @@ public class FacultyDashboardService {
         return "Progress Saved Successfully";
     }
 
+    // ==================== AI ANALYSIS ====================
+
     public String runAIAnalysis(Long projectId, String facultyEmail) {
         try {
             FacultyEntity faculty = facultyRepository
@@ -184,106 +175,61 @@ public class FacultyDashboardService {
             ProjectEntity project = projectRepository.findById(projectId)
                     .orElseThrow(() -> new RuntimeException("Project not found"));
 
+            // Verify faculty is assigned
             if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
                 throw new RuntimeException("Unauthorized: You are not assigned to this project");
             }
 
+            // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
             if (zipPath == null || zipPath.isEmpty()) {
                 throw new RuntimeException("Project ZIP not found in storage");
             }
 
+            System.out.println("Downloading project ZIP from: " + zipPath);
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
+            System.out.println("Downloaded ZIP size: " + zipBytes.length + " bytes");
 
-            boolean serviceReady = wakeUpAIService(3);
+            // Prepare multipart request
+            RestTemplate restTemplate = new RestTemplate();
             
-            String analysisResult = sendAnalysisRequest(
-                project.getTitle(), 
-                project.getDescription(), 
-                zipBytes
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+            body.add("project_name", project.getTitle() != null ? project.getTitle() : "Untitled Project");
+            body.add("student_description", project.getDescription() != null ? project.getDescription() : "No description provided");
+            
+            // Add ZIP file
+            ByteArrayResource fileResource = new ByteArrayResource(zipBytes) {
+                @Override
+                public String getFilename() {
+                    return "project.zip";
+                }
+            };
+            body.add("project_zip", fileResource);
+
+            HttpEntity<MultiValueMap<String, Object>> requestEntity = 
+                new HttpEntity<>(body, headers);
+
+            System.out.println("Sending analysis request to: " + aiAnalysisUrl + "/analyze");
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                aiAnalysisUrl + "/analyze", 
+                requestEntity, 
+                String.class
             );
 
-            return analysisResult;
+            System.out.println("AI Analysis completed successfully");
+            return response.getBody();
 
-        } catch (ResourceAccessException e) {
-            throw new RuntimeException("AI service is not responding. It might be waking up. Please wait 1-2 minutes and try again.");
-        } catch (HttpClientErrorException | HttpServerErrorException e) {
-            throw new RuntimeException("AI service error: " + e.getMessage());
         } catch (Exception e) {
+            System.err.println("AI Analysis failed: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("AI Analysis failed: " + e.getMessage());
         }
     }
 
-    private boolean wakeUpAIService(int maxAttempts) {
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                HttpHeaders headers = new HttpHeaders();
-                HttpEntity<String> entity = new HttpEntity<>(headers);
-                
-                ResponseEntity<String> response = restTemplate.exchange(
-                    aiAnalysisUrl + "/warmup",
-                    HttpMethod.GET,
-                    entity,
-                    String.class
-                );
-
-                if (response.getStatusCode() == HttpStatus.OK) {
-                    Thread.sleep(2000);
-                    return true;
-                }
-                
-            } catch (ResourceAccessException e) {
-                if (attempt < maxAttempts) {
-                    try {
-                        Thread.sleep(10000 * attempt);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            } catch (Exception e) {
-                if (attempt < maxAttempts) {
-                    try {
-                        Thread.sleep(10000);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    private String sendAnalysisRequest(String projectName, String description, byte[] zipBytes) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-
-        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        body.add("project_name", projectName != null ? projectName : "Untitled Project");
-        body.add("student_description", description != null ? description : "No description provided");
-        
-        ByteArrayResource fileResource = new ByteArrayResource(zipBytes) {
-            @Override
-            public String getFilename() {
-                return "project.zip";
-            }
-        };
-        body.add("project_zip", fileResource);
-
-        HttpEntity<MultiValueMap<String, Object>> requestEntity = 
-            new HttpEntity<>(body, headers);
-        
-        ResponseEntity<String> response = restTemplate.postForEntity(
-            aiAnalysisUrl + "/analyze", 
-            requestEntity, 
-            String.class
-        );
-
-        if (response.getStatusCode() == HttpStatus.OK) {
-            return response.getBody();
-        } else {
-            throw new RuntimeException("Analysis failed with status: " + response.getStatusCode());
-        }
-    }
+    // ==================== FILE OPERATIONS WITH SUPABASE ====================
 
     public List<FileInfo> getProjectFiles(Long projectId, String path, String email) {
         FacultyEntity faculty = facultyRepository
@@ -293,11 +239,13 @@ public class FacultyDashboardService {
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
         try {
+            // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
             if (zipPath == null || zipPath.isEmpty()) {
                 throw new RuntimeException("Project ZIP not found in storage");
@@ -305,9 +253,12 @@ public class FacultyDashboardService {
 
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
+            // List files in ZIP
             return listFilesInZip(zipBytes, path);
 
         } catch (Exception e) {
+            System.err.println("Error reading project files: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Error reading project files: " + e.getMessage());
         }
     }
@@ -324,11 +275,13 @@ public class FacultyDashboardService {
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
         try {
+            // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
             if (zipPath == null || zipPath.isEmpty()) {
                 throw new RuntimeException("Project ZIP not found in storage");
@@ -336,9 +289,12 @@ public class FacultyDashboardService {
 
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
+            // Extract specific file content from ZIP
             return extractFileFromZip(zipBytes, path);
 
         } catch (Exception e) {
+            System.err.println("Error reading file: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Error reading file: " + e.getMessage());
         }
     }
@@ -355,11 +311,13 @@ public class FacultyDashboardService {
         ProjectEntity project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new RuntimeException("Project not found"));
 
+        // Verify faculty is assigned to this project
         if (!project.getAssignedFaculty().getFacultyId().equals(faculty.getFacultyId())) {
             throw new RuntimeException("Unauthorized: You are not assigned to this project");
         }
 
         try {
+            // Download ZIP from Supabase
             String zipPath = project.getProjectZipPath();
             if (zipPath == null || zipPath.isEmpty()) {
                 throw new RuntimeException("Project ZIP not found in storage");
@@ -367,14 +325,19 @@ public class FacultyDashboardService {
 
             byte[] zipBytes = supabaseStorage.downloadFile(zipPath);
 
+            // Extract specific file from ZIP
             byte[] fileBytes = extractFileBytesFromZip(zipBytes, path);
             
             return new ByteArrayResource(fileBytes);
 
         } catch (Exception e) {
+            System.err.println("Error downloading file: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Error downloading file: " + e.getMessage());
         }
     }
+
+    // ==================== HELPER METHODS ====================
 
     private List<FileInfo> listFilesInZip(byte[] zipBytes, String prefix) throws IOException {
         List<FileInfo> fileInfos = new ArrayList<>();
@@ -385,10 +348,12 @@ public class FacultyDashboardService {
             while ((entry = zis.getNextEntry()) != null) {
                 String entryName = entry.getName();
 
+                // Skip macOS metadata files
                 if (entryName.contains("__MACOSX") || entryName.contains(".DS_Store")) {
                     continue;
                 }
 
+                // Filter by prefix if provided
                 if (prefix != null && !prefix.isEmpty()) {
                     String normalizedPrefix = prefix.endsWith("/") ? prefix : prefix + "/";
                     
@@ -396,26 +361,32 @@ public class FacultyDashboardService {
                         continue;
                     }
                     
+                    // Remove prefix from entry name
                     entryName = entryName.substring(normalizedPrefix.length());
                 }
 
+                // Skip if empty or just "/"
                 if (entryName.isEmpty() || entryName.equals("/")) {
                     continue;
                 }
 
+                // Remove trailing slash for processing
                 boolean isDirectory = entryName.endsWith("/") || entry.isDirectory();
                 if (entryName.endsWith("/")) {
                     entryName = entryName.substring(0, entryName.length() - 1);
                 }
 
+                // Skip if still empty
                 if (entryName.isEmpty()) {
                     continue;
                 }
 
+                // Get first level only
                 String[] parts = entryName.split("/");
                 String firstName = parts[0];
 
                 if (parts.length > 1) {
+                    // It's in a subdirectory, add the directory if not already added
                     if (!addedDirectories.contains(firstName)) {
                         String dirPath = prefix != null && !prefix.isEmpty() ? 
                                 prefix + "/" + firstName : firstName;
@@ -423,7 +394,9 @@ public class FacultyDashboardService {
                         addedDirectories.add(firstName);
                     }
                 } else {
+                    // It's in current directory
                     if (isDirectory) {
+                        // Add directory if not already added
                         if (!addedDirectories.contains(firstName)) {
                             String dirPath = prefix != null && !prefix.isEmpty() ? 
                                     prefix + "/" + firstName : firstName;
@@ -431,6 +404,7 @@ public class FacultyDashboardService {
                             addedDirectories.add(firstName);
                         }
                     } else {
+                        // It's a file
                         if (!addedDirectories.contains(firstName)) {
                             String filePath = prefix != null && !prefix.isEmpty() ? 
                                     prefix + "/" + firstName : firstName;
@@ -444,6 +418,7 @@ public class FacultyDashboardService {
             }
         }
 
+        // Sort: directories first, then files, both alphabetically
         fileInfos.sort((a, b) -> {
             if (a.isDirectory() && !b.isDirectory()) return -1;
             if (!a.isDirectory() && b.isDirectory()) return 1;
