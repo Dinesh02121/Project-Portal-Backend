@@ -77,6 +77,7 @@ public class FacultyDashboardController {
         return ResponseEntity.ok(dashboardService.getProjectDetails(projectId, auth.getName()));
     }
 
+    // File operations endpoints
     @GetMapping("/project/{projectId}/files")
     public List<FileInfo> getProjectFiles(
             @PathVariable Long projectId,
@@ -96,26 +97,20 @@ public class FacultyDashboardController {
                 .body(content);
     }
 
-    @PostMapping("/project/{projectId}/ai-analysis")
-    public ResponseEntity<String> runAIAnalysis(
-            @PathVariable Long projectId,
-            Authentication auth) {
-        try {
-            String result = dashboardService.runAIAnalysis(projectId, auth.getName());
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(result);
-        } catch (RuntimeException e) {
-            String errorJson = String.format(
-                "{\"error\": \"%s\"}", 
-                e.getMessage().replace("\"", "\\\"")
-            );
-            
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(errorJson);
-        }
-    }
+            @PostMapping("/project/{projectId}/ai-analysis")
+            public ResponseEntity<String> runAIAnalysis(
+                    @PathVariable Long projectId,
+                    Authentication auth) {
+                try {
+                    String result = dashboardService.runAIAnalysis(projectId, auth.getName());
+                    return ResponseEntity.ok()
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(result);
+                } catch (Exception e) {
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body("{\"error\": \"" + e.getMessage() + "\"}");
+                }
+            }
 
     @GetMapping("/project/{projectId}/file/download")
     public ResponseEntity<Resource> downloadFile(
